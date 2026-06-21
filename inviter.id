@@ -1,0 +1,67 @@
+// routes/users.js
+const express = require("express");
+const { nanoid } = require("nanoid");
+const db = require("../db");
+
+const router = express.Router();
+
+function normalizePhone(phone) {
+  return String(phone).replace(/\s+/g, "");
+}
+
+router.post("/register", (req, res) => {
+  const { phone, ref } = req.body || {};
+  if (!phone || normalizePhone(phone).length < 9) {
+    return res.status(400).json({ error: "A valid phone number is required." });
+  }
+  const cleanPhone = normalizePhone(phone);
+
+  const existing = db.prepare("SELECT * FROM users WHERE phone = ?").get(cleanPhone);
+  if (existing) {
+    return res.json({
+      phone: existing.phone,
+      referralCode: existing.referral_code,
+      inviteCount: existing.invite_count,
+      link: `${process.env.BASE_URL || ""}/?ref=${existing.referral_code}`
+    });
+  }
+
+  let inviter = null;
+  if (ref) {
+    inviter = db.prepare("SELECT * FROM users WHERE referral_code = ?").get(ref);
+  }
+
+  const referralCode = nanoid(8);
+  const insert = db.prepare(`
+    INSERT INTO users (phone, referral_code, invited_by)
+    VALUES (?, ?, ?)
+  `);
+  const info = insert.run(cleanPhone, referralCode, inviter ? inviter.id : null);
+
+  if (inviter) {
+    db.prepare("UPDATE users SET invite_count = invite_count + 1 WHERE id = ?").run(inviter.id);
+  }
+
+  const newUser = db.prepare("SELECT * FROM users WHERE id = ?").get(info.lastInsertRowid);
+  res.status(201).json({
+    phone: newUser.phone,
+    referralCode: newUser.referral_code,
+    inviteCount: newUser.invite_count,
+    link: `${process.env.BASE_URL || ""}/?ref=${newUser.referral_code}`
+  });
+});
+
+router.get("/:phone/stats", (req, res) => {
+  const phone = normalizePhone(req.params.phone);
+  const user = db.prepare("SELECT * FROM users WHERE phone = ?").get(phone);
+  if (!user) return res.status(404).json({ error: "User not found." });
+
+  res.json({
+    phone: user.phone,
+    referralCode: user.referral_code,
+    inviteCount: user.invite_count,
+    link: `${process.env.BASE_URL || ""}/?ref=${user.referral_code}`
+  });
+});
+
+module.exports = router;
